@@ -18,12 +18,12 @@ that a person or model wrote the text.
 - Node.js 18 or newer
 - An MCP host that supports local stdio servers
 
-## Use without installing
+## Run from GitHub
 
 Add this server to Claude Code:
 
 ```bash
-claude mcp add avoid-ai-writing -- npx -y avoid-ai-writing-mcp
+claude mcp add avoid-ai-writing -- npx -y github:conorbronsdon/avoid-ai-writing-mcp
 ```
 
 Or add it to an MCP JSON configuration:
@@ -33,11 +33,14 @@ Or add it to an MCP JSON configuration:
   "mcpServers": {
     "avoid-ai-writing": {
       "command": "npx",
-      "args": ["-y", "avoid-ai-writing-mcp"]
+      "args": ["-y", "github:conorbronsdon/avoid-ai-writing-mcp"]
     }
   }
 }
 ```
+
+After the package is released to npm, replace the GitHub package spec with
+`avoid-ai-writing-mcp`.
 
 The package uses stdio for protocol messages. It does not open a port or send
 input to an API.
