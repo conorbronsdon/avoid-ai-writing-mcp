@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createServer } from "../src/server.js";
+
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json");
 
 async function connectedPair() {
   const server = createServer();
@@ -20,6 +24,7 @@ test("advertises exactly the two local, read-only tools", async (t) => {
   t.after(async () => Promise.all([client.close(), server.close()]));
 
   const { tools } = await client.listTools();
+  assert.equal(client.getServerVersion().version, version);
   assert.deepEqual(tools.map(({ name }) => name).sort(), ["audit_text", "score_text"]);
 
   for (const tool of tools) {
@@ -68,7 +73,27 @@ test("audit_text returns findings and typed highlights", async (t) => {
   assert.equal(result.structuredContent.issues[0].type, "tier1");
   assert.equal(result.structuredContent.highlights.length, 1);
   assert.equal(result.structuredContent.statistics.tier1_count, 6);
+  assert.deepEqual(result.structuredContent.truncated, { issues: 0, highlights: 0 });
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+});
+
+test("audit_text caps highlighted regions and reports truncation", async (t) => {
+  const { client, server } = await connectedPair();
+  t.after(async () => Promise.all([client.close(), server.close()]));
+
+  const text = Array.from(
+    { length: 120 },
+    () =>
+      "Comprehensive systems improve workflows. Teams review the details carefully. People record the result clearly.",
+  ).join(" ");
+  const result = await client.callTool({
+    name: "audit_text",
+    arguments: { text, context: "general" },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.highlights.length, 100);
+  assert.equal(result.structuredContent.truncated.highlights, 20);
 });
 
 test("short text is returned as unscored rather than a transport error", async (t) => {

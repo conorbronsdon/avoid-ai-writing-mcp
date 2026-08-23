@@ -18,10 +18,11 @@
   "files": [
     "src/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "start": "node src/index.js",
@@ -30,7 +31,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "avoid-ai-writing-detector": "^3.22.1",
+    "avoid-ai-writing-detector": "3.22.1",
     "zod": "^3.25.0"
   },
   "keywords": [

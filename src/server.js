@@ -1,8 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createRequire } from "node:module";
 import AIDetector from "avoid-ai-writing-detector";
 import * as z from "zod/v4";
 
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json");
+
 const CONTEXT_MODES = ["general", "technical", "marketing", "personal"];
+const MAX_ISSUES = 100;
+const MAX_HIGHLIGHTS = 100;
 
 const inputSchema = {
   text: z.string().min(1).max(100_000).describe(
@@ -54,7 +60,7 @@ const highlightSchema = z.object({
 
 const auditOutputSchema = {
   ...scoreOutputSchema,
-  issues: z.array(issueSchema),
+  issues: z.array(issueSchema).max(MAX_ISSUES),
   statistics: z.object({
     tier1_count: z.number().int().nonnegative(),
     tier2_count: z.number().int().nonnegative(),
@@ -67,7 +73,11 @@ const auditOutputSchema = {
       roleplay: z.number().int().nonnegative(),
     }),
   }),
-  highlights: z.array(highlightSchema),
+  highlights: z.array(highlightSchema).max(MAX_HIGHLIGHTS),
+  truncated: z.object({
+    issues: z.number().int().nonnegative(),
+    highlights: z.number().int().nonnegative(),
+  }),
 };
 
 const readOnlyAnnotations = {
@@ -107,7 +117,7 @@ function auditResult(result, requestedContext) {
 
   return {
     ...score,
-    issues: result.issues.map((issue) => ({
+    issues: result.issues.slice(0, MAX_ISSUES).map((issue) => ({
       type: issue.type,
       text: issue.text,
       severity: issue.severity,
@@ -125,7 +135,7 @@ function auditResult(result, requestedContext) {
         roleplay: normalization.roleplay ?? 0,
       },
     },
-    highlights: result.highlight_sentence_for_ai.map((highlight) => ({
+    highlights: result.highlight_sentence_for_ai.slice(0, MAX_HIGHLIGHTS).map((highlight) => ({
       start_sentence: highlight.startSentence,
       end_sentence: highlight.endSentence,
       start: highlight.start,
@@ -133,6 +143,13 @@ function auditResult(result, requestedContext) {
       hit_count: highlight.hitCount,
       score: highlight.score,
     })),
+    truncated: {
+      issues: Math.max(0, result.issues.length - MAX_ISSUES),
+      highlights: Math.max(
+        0,
+        result.highlight_sentence_for_ai.length - MAX_HIGHLIGHTS,
+      ),
+    },
   };
 }
 
@@ -146,7 +163,7 @@ function asToolResult(structuredContent) {
 export function createServer() {
   const server = new McpServer({
     name: "avoid-ai-writing-mcp",
-    version: "0.1.0",
+    version,
   });
 
   server.registerTool(
@@ -170,7 +187,7 @@ export function createServer() {
     {
       title: "Audit text for AI-writing patterns",
       description:
-        "Audit text locally with the deterministic Avoid AI Writing detector. Returns the score plus every flagged pattern, suggested alternatives, aggregate statistics, and highlighted sentence regions. This is a heuristic writing audit, not proof of authorship; use score_text for a compact result.",
+        "Audit text locally with the deterministic Avoid AI Writing detector. Returns the score plus up to 100 flagged patterns and 100 highlighted sentence regions, with truncation counts. This is a heuristic writing audit, not proof of authorship; use score_text for a compact result.",
       inputSchema,
       outputSchema: auditOutputSchema,
       annotations: { ...readOnlyAnnotations, title: "Audit text for AI-writing patterns" },
