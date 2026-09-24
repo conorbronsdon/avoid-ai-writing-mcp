@@ -1,5 +1,7 @@
 # avoid-ai-writing-mcp
 
+> **Maintenance mode.** This project is stable and receives security fixes. New features aren't planned, but issues and pull requests are still welcome.
+
 A local, deterministic MCP server for auditing prose with the published
 [`avoid-ai-writing-detector`](https://www.npmjs.com/package/avoid-ai-writing-detector).
 
