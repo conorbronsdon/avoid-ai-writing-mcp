@@ -1,0 +1,19 @@
+# Maintenance mode: version-update PRs are off (limit 0). Security updates still arrive
+# through Dependabot security updates, enabled in repository settings.
+version: 2
+updates:
+  # npm security updates arrive as one grouped PR (minor and patch). Major bumps stay
+  # separate so they get a deliberate look. Version updates stay off (limit 0).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
