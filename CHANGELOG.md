@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.1] - 2026-11-16
+
+### Security
+
+- Raise the `zod` runtime dependency from `^3.25.0` to `^4.6.7`, clearing npm
+  audit advisories. The server already imported the `zod/v4` API, so tool
+  validation and results are unchanged.
+
 ## [0.1.0] - 2026-08-23
 
 ### Added

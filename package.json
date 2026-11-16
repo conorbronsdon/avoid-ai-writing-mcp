@@ -1,6 +1,6 @@
 {
   "name": "avoid-ai-writing-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local, deterministic MCP server for auditing AI-writing patterns.",
   "type": "module",
   "license": "MIT",
