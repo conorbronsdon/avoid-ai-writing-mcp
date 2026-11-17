@@ -110,3 +110,49 @@ test("short text is returned as unscored rather than a transport error", async (
   assert.equal(result.structuredContent.unscored_reason, "too_short");
   assert.equal(result.structuredContent.classification, "UNSCORED");
 });
+
+test("audit_text reports non-string detector suggestions as null", async (t) => {
+  const { client, server } = await connectedPair();
+  t.after(async () => Promise.all([client.close(), server.close()]));
+
+  // The detector resolves "constructor" and "__proto__" against
+  // Object.prototype, yielding a function or object as the suggestion.
+  for (const word of ["constructor", "__proto__"]) {
+    const result = await client.callTool({
+      name: "audit_text",
+      arguments: {
+        text: `We set ${word} on the object here so that the lookup works for all of the callers.`,
+        context: "technical",
+      },
+    });
+
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(result.structuredContent.issues, [
+      { type: "tier1", text: word, severity: "high", suggestion: null },
+    ]);
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  }
+});
+
+test("audit_text preserves string suggestions from the detector", async (t) => {
+  const { client, server } = await connectedPair();
+  t.after(async () => Promise.all([client.close(), server.close()]));
+
+  const result = await client.callTool({
+    name: "audit_text",
+    arguments: {
+      text: "We set robust defaults on the object here so that the lookup works for all of the callers.",
+      context: "technical",
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent.issues, [
+    {
+      type: "tier1",
+      text: "robust",
+      severity: "high",
+      suggestion: "strong, reliable, solid",
+    },
+  ]);
+});

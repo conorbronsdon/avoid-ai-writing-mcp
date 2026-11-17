@@ -111,6 +111,14 @@ function scoreResult(result, requestedContext) {
   };
 }
 
+// The pinned detector looks up suggestions with plain object indexing, so a
+// token such as "constructor" or "__proto__" resolves to an Object.prototype
+// member (a function or object) instead of a string. Only strings are valid
+// suggestions in the output schema; anything else is reported as null.
+function suggestionText(suggestion) {
+  return typeof suggestion === "string" ? suggestion : null;
+}
+
 function auditResult(result, requestedContext) {
   const score = scoreResult(result, requestedContext);
   const normalization = result.stats.normalization ?? {};
@@ -121,7 +129,7 @@ function auditResult(result, requestedContext) {
       type: issue.type,
       text: issue.text,
       severity: issue.severity,
-      suggestion: issue.suggestion ?? null,
+      suggestion: suggestionText(issue.suggestion),
     })),
     statistics: {
       tier1_count: result.stats.tier1Count ?? 0,
