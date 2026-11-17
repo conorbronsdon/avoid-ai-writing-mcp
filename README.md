@@ -4,6 +4,9 @@
 
 A local, deterministic MCP server for auditing prose with the published
 [`avoid-ai-writing-detector`](https://www.npmjs.com/package/avoid-ai-writing-detector).
+Each release pins one exact detector version (see `dependencies` in
+`package.json`; 0.1.0 uses 3.22.1), so scores can differ from the newest
+detector CLI on the same text.
 
 It exposes two read-only tools:
 
