@@ -1,0 +1,218 @@
+name: Publish
+
+# Publishes to npm with npm Trusted Publishing (OIDC): no npm token exists for
+# this package. The trusted publisher on npmjs.com names this repository and this
+# file (publish.yml), so renaming the file breaks publishing.
+#
+# A version bump merged to main publishes it. A manual dispatch on main finishes a
+# release that failed part-way (for example npm propagation lag); npm publish and
+# the GitHub release each check their own target first, so a dispatch (or a re-run
+# of failed jobs) with nothing missing is a no-op.
+#
+# Third-party code (npm ci, the tests) runs only in `verify`, which holds no write
+# permission and no OIDC token. Only `publish` can mint the npm OIDC token, and it
+# installs nothing. Only `release` can write to the repository, and it runs only gh.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+  workflow_dispatch:
+
+# Serialize publishes: each job checks a target, then writes it; overlapping runs
+# could both see "missing". Never cancel a run mid-publish. GitHub keeps only the
+# newest pending run in a group, so after several quick version bumps, dispatch
+# again for any version that did not publish. The group is per ref, so a dispatch
+# from another branch (which skips every job) never displaces a pending main run.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Only main publishes, including a manual dispatch from another ref.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.local }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Check if package.json version is already published
+        id: version
+        run: |
+          LOCAL_VERSION="$(node -p "require('./package.json').version")"
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          LOCK_VERSION="$(node -p "require('./package-lock.json').packages[''].version")"
+          if [ "$LOCK_VERSION" != "$LOCAL_VERSION" ]; then
+            echo "::error::package.json is $LOCAL_VERSION but package-lock.json is $LOCK_VERSION. Set both before releasing."
+            exit 1
+          fi
+          echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          # Ask whether THIS version is on npm, not what the `latest` dist-tag points
+          # at. Only npm's E404 means unpublished; any other answer or error stops
+          # here instead of guessing.
+          ERR="$(mktemp)"
+          if EXACT="$(npm view "$PKG_NAME@$LOCAL_VERSION" version 2>"$ERR")"; then
+            if [ "$EXACT" != "$LOCAL_VERSION" ]; then
+              echo "::error::npm view $PKG_NAME@$LOCAL_VERSION returned '$EXACT', expected '$LOCAL_VERSION' or E404."
+              exit 1
+            fi
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$PKG_NAME@$LOCAL_VERSION is already on npm; nothing to publish."
+          elif grep -q 'code E404' "$ERR"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$PKG_NAME@$LOCAL_VERSION is not on npm; publishing."
+          else
+            cat "$ERR" >&2
+            echo "::error::Could not check whether $PKG_NAME@$LOCAL_VERSION is on npm (the error was not a 404). Not guessing; re-run once npm answers."
+            exit 1
+          fi
+
+  verify:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  publish:
+    needs: [check, verify]
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Node 24 ships npm >=11.5.1 with sigstore intact; self-upgrading npm on the
+          # Node 22 runner broke provenance publish ("Cannot find module sigstore").
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Show tool versions
+        run: node --version && npm --version
+
+      # No install: the package has no prepare/prepack/prepublishOnly script, and
+      # nothing third-party should run while the OIDC token can be minted.
+      - name: Publish to npm
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          PKG="$(node -p "require('./package.json').name")"
+          # Check again here: "Re-run failed jobs" reuses the check job's earlier
+          # answer, and npm may have accepted this version since.
+          ERR="$(mktemp)"
+          if EXACT="$(npm view "$PKG@$VERSION" version 2>"$ERR")" && [ "$EXACT" = "$VERSION" ]; then
+            echo "$PKG@$VERSION is already on npm; not publishing again."
+          elif grep -q 'code E404' "$ERR"; then
+            npm publish --provenance --access public
+          else
+            cat "$ERR" >&2
+            echo "::error::Could not check whether $PKG@$VERSION is on npm (not a 404). Not guessing; re-run once npm answers."
+            exit 1
+          fi
+
+      # npm can take a minute or more to serve a version it just accepted, and the
+      # GitHub release must not exist for an unpublished version. Wait (bounded).
+      - name: Wait for npm to serve this version
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          PKG="$(node -p "require('./package.json').name")"
+          for attempt in $(seq 1 10); do
+            [ "$(npm view "$PKG@$VERSION" version 2>/dev/null)" = "$VERSION" ] && break
+            [ "$attempt" = 10 ] && { echo "::error::$PKG@$VERSION is still not on npm after ~5 minutes; not creating a GitHub release for an unpublished version. Once npm serves it, re-run failed jobs or dispatch: gh workflow run publish.yml --ref main"; exit 1; }
+            sleep 30
+          done
+          echo "npm serves $PKG@$VERSION."
+
+  # Gated on "the release is missing", never on "npm published in this run": a
+  # catch-up dispatch after an npm-lag failure must still finish the release. It
+  # runs when this run published, or when the check found the version already on npm.
+  release:
+    needs: [check, publish]
+    if: >-
+      !cancelled() && needs.check.result == 'success' &&
+      (needs.publish.result == 'success' ||
+       (needs.publish.result == 'skipped' && needs.check.outputs.changed == 'false'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and its tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # Only "release not found" means missing; any other gh failure stops the run
+          # rather than racing a create against a release that may already exist.
+          if VIEW="$(gh release view "v$VERSION" 2>&1)"; then
+            echo "Release v$VERSION already exists; skipping."
+            exit 0
+          elif ! printf '%s' "$VIEW" | grep -qi 'release not found'; then
+            echo "::error::Could not check for release v$VERSION: $VIEW"
+            exit 1
+          fi
+          PKG="$(node -p "require('./package.json').name")"
+          # npm serves this version by now (the wait step or the check job saw it).
+          # Tag exactly the commit npm recorded as published (gitHead), so the tag and
+          # the provenance attestation name the same commit. Never guess: an npm
+          # error, or a gitHead that is not a commit on main (for example a publish
+          # from another branch), stops the run.
+          ERR="$(mktemp)"
+          if ! TARGET="$(npm view "$PKG@$VERSION" gitHead 2>"$ERR")"; then
+            cat "$ERR" >&2
+            echo "::error::Could not read gitHead for $PKG@$VERSION; re-run once npm answers."
+            exit 1
+          fi
+          if ! printf '%s' "$TARGET" | grep -Eq '^[0-9a-f]{40}$' \
+             || ! git cat-file -e "$TARGET^{commit}" 2>/dev/null \
+             || ! git merge-base --is-ancestor "$TARGET" HEAD; then
+            echo "::error::npm's gitHead for $PKG@$VERSION ('$TARGET') is not a commit on main. Not releasing."
+            exit 1
+          fi
+          # gh attaches a release to an existing tag and ignores --target, so a stray
+          # tag pointing elsewhere must stop the run instead of being released.
+          if TAGGED="$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}")" && [ "$TAGGED" != "$TARGET" ]; then
+            echo "::error::Tag v$VERSION already points at $TAGGED, not $TARGET. Not releasing it."
+            exit 1
+          fi
+          echo "Releasing v$VERSION at $TARGET."
+          gh release create "v$VERSION" --target "$TARGET" --title "avoid-ai-writing-mcp $VERSION" --generate-notes
