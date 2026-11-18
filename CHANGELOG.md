@@ -2,13 +2,26 @@
 
 All notable changes to this project are documented here.
 
-## [0.1.1] - 2026-11-16
+## [0.1.1] - 2026-11-17
 
 ### Security
 
-- Raise the `zod` runtime dependency from `^3.25.0` to `^4.6.7`, clearing npm
-  audit advisories. The server already imported the `zod/v4` API, so tool
-  validation and results are unchanged.
+- Raise the `zod` runtime dependency from `^3.25.0` to `^4.6.7`, clearing the
+  high-severity advisory GHSA-mrhx-c7xc-m3w5 (memory exhaustion while
+  validating oversized constrained collections, zod `< 4.6.6`). The server
+  already imported the `zod/v4` API, so tool validation and results are
+  unchanged.
+
+### Fixed
+
+- `audit_text` no longer fails its own output schema when the text contains a
+  token such as `constructor` or `__proto__`. The pinned detector resolves
+  those to `Object.prototype` members; a non-string suggestion is now
+  reported as `null`.
+
+### Documentation
+
+- The README says which detector version each release pins.
 
 ## [0.1.0] - 2026-08-23
 
