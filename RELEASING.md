@@ -3,8 +3,12 @@
 Releases publish automatically from `main` through
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml), using npm
 Trusted Publishing (OIDC). There is no npm token for this package, and nobody
-publishes by hand. npm package versions are immutable, so complete the preflight
-before merging a version bump.
+publishes by hand. The npm trusted publisher matches this repository and the
+workflow filename, not the branch: until it also names a GitHub environment
+restricted to `main`, anyone who can push a branch here can publish from it.
+
+npm package versions are immutable, so complete the preflight before merging a
+version bump.
 
 ## Preflight (in the release pull request)
 
@@ -44,9 +48,9 @@ run only on `main`:
    anything, then waits (up to about five minutes) for npm to serve the version.
    It is the only job that can mint the npm OIDC token.
 4. **release** creates the GitHub release and tag `vX.Y.Z` if they are missing,
-   at the commit npm recorded as published (`gitHead`), falling back to the
-   commit on `main` that set the version. It refuses a stray `vX.Y.Z` tag that
-   points anywhere else.
+   at exactly the commit npm recorded as published (`gitHead`). It stops instead
+   of guessing when npm errors or that commit is not on `main`, and it refuses a
+   stray `vX.Y.Z` tag that points anywhere else.
 
 GitHub keeps only the newest pending run in the `publish` concurrency group, so
 after several quick version bumps, check that each version published.
@@ -70,5 +74,6 @@ accepted. Do not bump the version and do not publish by hand. Once
 gh workflow run publish.yml --ref main
 ```
 
-Every step checks its own target first, so the re-run skips what already exists
-and finishes the rest. Never reuse or move a release tag after publication.
+`npm publish` and the GitHub release each check their own target first, so a
+dispatch or "Re-run failed jobs" skips what already exists and finishes the rest.
+Never reuse or move a release tag after publication.

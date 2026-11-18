@@ -5,8 +5,9 @@ name: Publish
 # file (publish.yml), so renaming the file breaks publishing.
 #
 # A version bump merged to main publishes it. A manual dispatch on main finishes a
-# release that failed part-way (for example npm propagation lag); every job checks
-# its own target first, so a dispatch with nothing missing is a no-op.
+# release that failed part-way (for example npm propagation lag); npm publish and
+# the GitHub release each check their own target first, so a dispatch (or a re-run
+# of failed jobs) with nothing missing is a no-op.
 #
 # Third-party code (npm ci, the tests) runs only in `verify`, which holds no write
 # permission and no OIDC token. Only `publish` can mint the npm OIDC token, and it
@@ -22,9 +23,10 @@ on:
 # Serialize publishes: each job checks a target, then writes it; overlapping runs
 # could both see "missing". Never cancel a run mid-publish. GitHub keeps only the
 # newest pending run in a group, so after several quick version bumps, dispatch
-# again for any version that did not publish.
+# again for any version that did not publish. The group is per ref, so a dispatch
+# from another branch (which skips every job) never displaces a pending main run.
 concurrency:
-  group: publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -125,7 +127,22 @@ jobs:
       # No install: the package has no prepare/prepack/prepublishOnly script, and
       # nothing third-party should run while the OIDC token can be minted.
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          PKG="$(node -p "require('./package.json').name")"
+          # Check again here: "Re-run failed jobs" reuses the check job's earlier
+          # answer, and npm may have accepted this version since.
+          ERR="$(mktemp)"
+          if EXACT="$(npm view "$PKG@$VERSION" version 2>"$ERR")" && [ "$EXACT" = "$VERSION" ]; then
+            echo "$PKG@$VERSION is already on npm; not publishing again."
+          elif grep -q 'code E404' "$ERR"; then
+            npm publish --provenance --access public
+          else
+            cat "$ERR" >&2
+            echo "::error::Could not check whether $PKG@$VERSION is on npm (not a 404). Not guessing; re-run once npm answers."
+            exit 1
+          fi
 
       # npm can take a minute or more to serve a version it just accepted, and the
       # GitHub release must not exist for an unpublished version. Wait (bounded).
@@ -136,7 +153,7 @@ jobs:
           PKG="$(node -p "require('./package.json').name")"
           for attempt in $(seq 1 10); do
             [ "$(npm view "$PKG@$VERSION" version 2>/dev/null)" = "$VERSION" ] && break
-            [ "$attempt" = 10 ] && { echo "::error::$PKG@$VERSION is still not on npm after ~5 minutes; not creating a GitHub release for an unpublished version. Re-run the workflow once npm serves it."; exit 1; }
+            [ "$attempt" = 10 ] && { echo "::error::$PKG@$VERSION is still not on npm after ~5 minutes; not creating a GitHub release for an unpublished version. Once npm serves it, re-run failed jobs or dispatch: gh workflow run publish.yml --ref main"; exit 1; }
             sleep 30
           done
           echo "npm serves $PKG@$VERSION."
@@ -175,18 +192,20 @@ jobs:
           fi
           PKG="$(node -p "require('./package.json').name")"
           # npm serves this version by now (the wait step or the check job saw it).
-          # Tag the commit npm recorded as published (gitHead), so the tag and the
-          # provenance attestation name the same commit. Fall back to main's own
-          # first-parent commit that set this version when npm has no gitHead.
-          TARGET="$(npm view "$PKG@$VERSION" gitHead 2>/dev/null || true)"
-          if [ -z "$TARGET" ] || ! git cat-file -e "$TARGET^{commit}" 2>/dev/null; then
-            # Escape every ERE metacharacter in the version (dots, and "+" in build metadata).
-            VERSION_RE="$(printf '%s' "$VERSION" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
-            SETS_VERSION="\"version\"[[:space:]]*:[[:space:]]*\"$VERSION_RE\""
-            TARGET="$(git log -1 --first-parent --diff-merges=first-parent --no-patch --format=%H -G"$SETS_VERSION" -- package.json)"
+          # Tag exactly the commit npm recorded as published (gitHead), so the tag and
+          # the provenance attestation name the same commit. Never guess: an npm
+          # error, or a gitHead that is not a commit on main (for example a publish
+          # from another branch), stops the run.
+          ERR="$(mktemp)"
+          if ! TARGET="$(npm view "$PKG@$VERSION" gitHead 2>"$ERR")"; then
+            cat "$ERR" >&2
+            echo "::error::Could not read gitHead for $PKG@$VERSION; re-run once npm answers."
+            exit 1
           fi
-          if [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$TARGET" HEAD; then
-            echo "::error::Could not find the commit on main that published version $VERSION."
+          if ! printf '%s' "$TARGET" | grep -Eq '^[0-9a-f]{40}$' \
+             || ! git cat-file -e "$TARGET^{commit}" 2>/dev/null \
+             || ! git merge-base --is-ancestor "$TARGET" HEAD; then
+            echo "::error::npm's gitHead for $PKG@$VERSION ('$TARGET') is not a commit on main. Not releasing."
             exit 1
           fi
           # gh attaches a release to an existing tag and ignores --target, so a stray
