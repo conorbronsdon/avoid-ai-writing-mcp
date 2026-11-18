@@ -1,0 +1,146 @@
+name: Publish
+
+# Publishes to npm with npm Trusted Publishing (OIDC): no npm token exists for
+# this package. The trusted publisher on npmjs.com names this repository and this
+# file (publish.yml), so renaming the file breaks publishing.
+#
+# A version bump merged to main publishes it. A manual dispatch on main finishes a
+# release that failed part-way (for example npm propagation lag); every step checks
+# its own target first, so a dispatch with nothing missing is a no-op.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+  workflow_dispatch:
+
+# Serialize publishes: each step checks a target, then writes it; overlapping runs
+# could both see "missing". Never cancel a run mid-publish.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Only main publishes, including a manual dispatch from another ref.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and its tag
+      id-token: write # npm Trusted Publishing and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Node 24 ships npm >=11.5.1 with sigstore intact; self-upgrading npm on the
+          # Node 22 runner broke provenance publish ("Cannot find module sigstore").
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check if package.json version is already published
+        id: version
+        run: |
+          LOCAL_VERSION="$(node -p "require('./package.json').version")"
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          # Ask whether THIS version is on npm, not what the `latest` dist-tag points at.
+          # Only a clear not-found means unpublished; any other npm error stops here
+          # instead of guessing.
+          ERR="$(mktemp)"
+          if EXACT="$(npm view "$PKG_NAME@$LOCAL_VERSION" version 2>"$ERR")"; then
+            if [ "$EXACT" = "$LOCAL_VERSION" ]; then
+              FOUND=yes
+            elif [ -z "$EXACT" ]; then
+              # Older npm prints nothing (exit 0) for a missing version of an existing package.
+              FOUND=no
+            else
+              echo "::error::npm view $PKG_NAME@$LOCAL_VERSION returned '$EXACT', expected '$LOCAL_VERSION' or nothing."
+              exit 1
+            fi
+          elif grep -q 'code E404' "$ERR"; then
+            FOUND=no
+          else
+            cat "$ERR" >&2
+            echo "::error::Could not check whether $PKG_NAME@$LOCAL_VERSION is on npm (the error was not a 404). Not guessing; re-run once npm answers."
+            exit 1
+          fi
+          if [ "$FOUND" = yes ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$PKG_NAME@$LOCAL_VERSION is already on npm; nothing to publish."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$PKG_NAME@$LOCAL_VERSION is not on npm; publishing."
+          fi
+
+      - name: Install dependencies
+        if: steps.version.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Test
+        if: steps.version.outputs.changed == 'true'
+        run: npm test
+
+      - name: Audit runtime dependencies
+        if: steps.version.outputs.changed == 'true'
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Show tool versions
+        if: steps.version.outputs.changed == 'true'
+        run: node --version && npm --version
+
+      - name: Publish to npm
+        if: steps.version.outputs.changed == 'true'
+        run: npm publish --provenance --access public
+
+      # npm can take a minute or more to serve a version it just accepted, and the
+      # GitHub release must not exist for an unpublished version. Wait (bounded) here.
+      - name: Wait for npm to serve this version
+        if: steps.version.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.local }}
+        run: |
+          PKG="$(node -p "require('./package.json').name")"
+          for attempt in $(seq 1 10); do
+            [ "$(npm view "$PKG@$VERSION" version 2>/dev/null)" = "$VERSION" ] && break
+            [ "$attempt" = 10 ] && { echo "::error::$PKG@$VERSION is still not on npm after ~5 minutes; not creating a GitHub release for an unpublished version. Re-run the workflow once npm serves it."; exit 1; }
+            sleep 30
+          done
+          echo "npm serves $PKG@$VERSION."
+
+      # Gated on "the release is missing", never on "npm published in this run": a
+      # catch-up dispatch after an npm-lag failure must still finish the release.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.local }}
+        run: |
+          # Only "release not found" means missing; any other gh failure stops the run
+          # rather than racing a create against a release that may already exist.
+          if VIEW="$(gh release view "v$VERSION" 2>&1)"; then
+            echo "Release v$VERSION already exists; skipping."
+            exit 0
+          elif ! printf '%s' "$VIEW" | grep -qi 'release not found'; then
+            echo "::error::Could not check for release v$VERSION: $VIEW"
+            exit 1
+          fi
+          # npm serves this version by now: the wait step confirmed it when changed is
+          # true, and the version step's own npm check did when changed is false.
+          # Target main's own commit that set this version (first parent, so a merge
+          # commit counts), not whatever HEAD is when a catch-up runs.
+          # Escape every ERE metacharacter in the version (dots, and "+" in build metadata).
+          VERSION_RE="$(printf '%s' "$VERSION" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
+          SETS_VERSION="\"version\"[[:space:]]*:[[:space:]]*\"$VERSION_RE\""
+          TARGET="$(git log -1 --first-parent --diff-merges=first-parent --no-patch --format=%H -G"$SETS_VERSION" -- package.json)"
+          if [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$TARGET" HEAD; then
+            echo "::error::Could not find the commit on main that set version $VERSION in package.json."
+            exit 1
+          fi
+          gh release create "v$VERSION" --target "$TARGET" --title "avoid-ai-writing-mcp $VERSION" --generate-notes
