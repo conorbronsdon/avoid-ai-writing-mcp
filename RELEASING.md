@@ -32,15 +32,24 @@ before merging a version bump.
 
 ## What merging does
 
-Merging a change to `package.json` on `main` runs the Publish workflow:
+Merging a change to `package.json` on `main` runs the Publish workflow. Its jobs
+run only on `main`:
 
-1. It checks whether this exact version is on npm. Only a clear `E404` counts as
-   unpublished; any other npm error fails the run instead of guessing.
-2. If the version is unpublished, it runs `npm ci`, `npm test` and a runtime
-   dependency audit, then `npm publish --provenance --access public`.
-3. It waits (up to about five minutes) for npm to serve the new version.
-4. If the GitHub release `vX.Y.Z` is missing, it creates it and the tag at the
-   commit on `main` that set the version in `package.json`.
+1. **check** fails if `package.json` and `package-lock.json` disagree on the
+   version. It then asks npm whether this exact version is published. Only npm's
+   `E404` counts as unpublished; any other error fails the run instead of guessing.
+2. **verify** (only for an unpublished version) runs `npm ci`, `npm test` and a
+   runtime dependency audit. It has no write permission and no OIDC token.
+3. **publish** runs `npm publish --provenance --access public` without installing
+   anything, then waits (up to about five minutes) for npm to serve the version.
+   It is the only job that can mint the npm OIDC token.
+4. **release** creates the GitHub release and tag `vX.Y.Z` if they are missing,
+   at the commit npm recorded as published (`gitHead`), falling back to the
+   commit on `main` that set the version. It refuses a stray `vX.Y.Z` tag that
+   points anywhere else.
+
+GitHub keeps only the newest pending run in the `publish` concurrency group, so
+after several quick version bumps, check that each version published.
 
 ## Verify
 
