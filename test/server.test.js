@@ -63,18 +63,38 @@ test("audit_text returns findings and typed highlights", async (t) => {
     name: "audit_text",
     arguments: {
       text: "This comprehensive and robust solution will seamlessly leverage a holistic ecosystem to facilitate impactful outcomes for everyone involved.",
-      context: "technical",
+      context: "general",
     },
   });
 
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.context, "technical");
+  assert.equal(result.structuredContent.context, "general");
   assert.equal(result.structuredContent.issues.length, 8);
   assert.equal(result.structuredContent.issues[0].type, "tier1");
   assert.equal(result.structuredContent.highlights.length, 1);
   assert.equal(result.structuredContent.statistics.tier1_count, 6);
   assert.deepEqual(result.structuredContent.truncated, { issues: 0, highlights: 0 });
   assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+});
+
+test("technical context suppresses words that are normal in code-adjacent prose", async (t) => {
+  const { client, server } = await connectedPair();
+  t.after(async () => Promise.all([client.close(), server.close()]));
+
+  const result = await client.callTool({
+    name: "audit_text",
+    arguments: {
+      text: "This comprehensive and robust solution will seamlessly leverage a holistic ecosystem to facilitate impactful outcomes for everyone involved.",
+      context: "technical",
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.context, "technical");
+  assert.deepEqual(
+    result.structuredContent.issues.map(({ text }) => text),
+    ["holistic", "impactful"],
+  );
 });
 
 test("audit_text caps highlighted regions and reports truncation", async (t) => {
@@ -111,13 +131,14 @@ test("short text is returned as unscored rather than a transport error", async (
   assert.equal(result.structuredContent.classification, "UNSCORED");
 });
 
-test("audit_text reports non-string detector suggestions as null", async (t) => {
+test("Object.prototype names are not findings and keep the output schema valid", async (t) => {
   const { client, server } = await connectedPair();
   t.after(async () => Promise.all([client.close(), server.close()]));
 
-  // The detector resolves "constructor" and "__proto__" against
-  // Object.prototype, yielding a function or object as the suggestion.
-  for (const word of ["constructor", "__proto__"]) {
+  // Detector 3.22.1 resolved "constructor" and "__proto__" against
+  // Object.prototype and returned a function or object as the suggestion,
+  // which the server reports as null. The pinned detector no longer flags them.
+  for (const word of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
     const result = await client.callTool({
       name: "audit_text",
       arguments: {
@@ -127,9 +148,7 @@ test("audit_text reports non-string detector suggestions as null", async (t) => 
     });
 
     assert.equal(result.isError, undefined);
-    assert.deepEqual(result.structuredContent.issues, [
-      { type: "tier1", text: word, severity: "high", suggestion: null },
-    ]);
+    assert.deepEqual(result.structuredContent.issues, []);
     assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
   }
 });
@@ -142,7 +161,7 @@ test("audit_text preserves string suggestions from the detector", async (t) => {
     name: "audit_text",
     arguments: {
       text: "We set robust defaults on the object here so that the lookup works for all of the callers.",
-      context: "technical",
+      context: "general",
     },
   });
 
@@ -155,4 +174,22 @@ test("audit_text preserves string suggestions from the detector", async (t) => {
       suggestion: "strong, reliable, solid",
     },
   ]);
+});
+
+// avoid-ai-writing-mcp#15: line-start whitespace runs made the detector's
+// line-anchored regexes quadratic. "w ".repeat(10) + U+2028 x 99,000 blocked
+// the server for about 28 s on detector 3.22.1.
+test("near-limit whitespace runs finish in bounded time", async (t) => {
+  const { client, server } = await connectedPair();
+  t.after(async () => Promise.all([client.close(), server.close()]));
+
+  for (const run of ["\u2028", "\u2029", "\n", "\r", " \n"]) {
+    const text = "w ".repeat(10) + run.repeat(Math.floor(99_000 / run.length));
+    const started = performance.now();
+    const result = await client.callTool({ name: "score_text", arguments: { text, context: "general" } });
+    const elapsed = performance.now() - started;
+
+    assert.equal(result.isError, undefined);
+    assert.ok(elapsed < 3_000, `${JSON.stringify(run)} run took ${Math.round(elapsed)} ms`);
+  }
 });
