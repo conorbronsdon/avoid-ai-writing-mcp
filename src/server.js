@@ -111,10 +111,10 @@ function scoreResult(result, requestedContext) {
   };
 }
 
-// The pinned detector looks up suggestions with plain object indexing, so a
-// token such as "constructor" or "__proto__" resolves to an Object.prototype
-// member (a function or object) instead of a string. Only strings are valid
-// suggestions in the output schema; anything else is reported as null.
+// Detector 3.22.1 looked up suggestions with plain object indexing, so a token
+// such as "constructor" or "__proto__" resolved to an Object.prototype member
+// (a function or object) instead of a string. Only strings are valid
+// suggestions in the output schema, so anything else is still reported as null.
 function suggestionText(suggestion) {
   return typeof suggestion === "string" ? suggestion : null;
 }

@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.2] - 2026-11-24
+
+### Security
+
+- Pin `avoid-ai-writing-detector` 3.39.1 (was 3.22.1). It fixes the quadratic
+  line-start whitespace scan behind #15: `"w ".repeat(10)` followed by 99,000
+  U+2028 characters, within the 100,000-character input limit, blocked the
+  server for about 28 seconds and now takes under 100 ms. A test covers
+  U+2028, U+2029, `\n`, `\r` and `" \n"` runs at that size.
+
+### Changed
+
+- Scores and findings follow the detector's 3.23 to 3.39 rule changes. In
+  `technical` context, words that are normal in code-adjacent prose (for
+  example "robust", "ecosystem", "comprehensive") are no longer flagged, and
+  names such as `constructor` or `__proto__` are no longer findings.
+
 ## [0.1.1] - 2026-11-17
 
 ### Security
